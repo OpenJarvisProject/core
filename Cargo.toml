@@ -1,0 +1,8 @@
+[package]
+name = "ojp-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+llama-crab = { version = "0.1", default-features = false }
+anyhow = "1"
