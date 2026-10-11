@@ -65,6 +65,32 @@ compression pipeline.
   cargo build --release
   ```
 
+## Compute-buffer VRAM investigation (found 2026-10-11)
+
+The GPU compute/scratch buffer (`sched_reserve`'s `Vulkan0 compute
+buffer size` log line) does **not** shrink from pruning layers — it's
+driven entirely by `n_ubatch` (the max micro-batch size), confirmed
+exactly linear by isolating it as its own variable, `n_ctx` held
+fixed: `n_ubatch=512` → 298.5 MiB, `256` → 149.25 MiB (exactly half),
+`128` → 74.625 MiB (quarter), `64` → 37.3 MiB (eighth). `n_ctx` only
+matters as an upper cap on the effective batch (dropping `n_ctx` below
+the default `n_ubatch` of 512 shrinks the buffer identically to
+lowering `n_ubatch` directly; raising `n_ctx` above it has no further
+effect). Output stayed correct and no decode-speed cost was observed
+at `n_ubatch=64` for a short prompt — **not tested for long-prompt
+prefill speed**, where a smaller ubatch processes the prompt in more
+sequential chunks and could plausibly be slower; that's a real,
+untested caveat, not a verified "free" setting.
+
+Both knobs are configurable via env vars for testing:
+`OJP_N_CTX`, `OJP_N_UBATCH` (unset leaves llama.cpp's own defaults).
+
+**Practical implication**: for memory-constrained targets (the
+project's phone/weak-laptop tiers), lowering `n_ubatch` is a real,
+independent lever for cutting GPU memory that has nothing to do with
+model size or pruning — worth exposing as a real config option
+alongside model-tier selection, not just a debug knob.
+
 ## Next steps (not yet done)
 
 - Stage 3: swap in a project-produced pruned/quantized model on the
