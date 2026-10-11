@@ -1,7 +1,10 @@
 //! ojp-core CLI.
 //!   ojp-core [model.gguf]                    Stage 1/2 smoke test (default)
 //!   ojp-core route <model.gguf> "<request>"  classify one request
-//!   ojp-core route-eval <model.gguf>         score the router on fixed cases
+//!   ojp-core route-eval <model.gguf> [--dev]  score the router on fixed cases
+//!   ojp-core chat <router.gguf> [main.gguf | <base_url> <model>]
+//!                                            routed assistant REPL
+mod assistant;
 mod router;
 
 use llama_crab::{Llama, LlamaParams};
@@ -90,6 +93,17 @@ fn main() -> anyhow::Result<()> {
             let mut router = Router::new(load(model)?);
             let d = router.classify(request)?;
             println!("{} ({} ms)", d.route.label(), d.elapsed.as_millis());
+        }
+        Some("chat") => {
+            let (router_model, main) = match args.as_slice() {
+                [_, r] => (r, None),
+                [_, r, url, model] if url.starts_with("http") => {
+                    (r, Some(assistant::Backend::Remote { base_url: url.clone(), model: model.clone() }))
+                }
+                [_, r, m] => (r, Some(assistant::Backend::Local(load(m)?))),
+                _ => anyhow::bail!("usage: ojp-core chat <router.gguf> [main.gguf | <base_url> <model>]"),
+            };
+            assistant::run(Router::new(load(router_model)?), main)?;
         }
         Some("route-eval") => {
             let (model, cases): (&String, &[(&str, Route)]) = match args.as_slice() {

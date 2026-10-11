@@ -78,6 +78,11 @@ impl Router {
         Router { llama, grammar }
     }
 
+    /// The router model doubles as the answer_directly responder.
+    pub fn llama_mut(&mut self) -> &mut Llama {
+        &mut self.llama
+    }
+
     pub fn classify(&mut self, request: &str) -> Result<Decision> {
         let start = Instant::now();
         let mut messages = vec![ChatMessage::new(Role::System, SYSTEM_PROMPT)];
