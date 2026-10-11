@@ -6,6 +6,7 @@
 //!                                            routed assistant REPL
 mod assistant;
 mod router;
+mod tools;
 
 use llama_crab::{Llama, LlamaParams};
 use router::{Route, Router};

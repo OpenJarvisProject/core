@@ -5,7 +5,8 @@
 //!                       any OpenAI-compatible server (Ollama, llama-server,
 //!                       another OJP device), or the router model if neither
 //!                       is configured
-//!   device_control  -> not wired yet; tools come with the MCP/OJP tool spec
+//!   device_control  -> the router model emits a grammar-constrained tool
+//!                       call, executed by tools.rs
 use std::io::Write;
 
 use anyhow::{Context, Result};
@@ -15,6 +16,7 @@ use llama_crab::{ChatMessage, CompletionOptions, Llama, Role, StreamControl};
 use serde_json::{Value, json};
 
 use crate::router::{Route, Router};
+use crate::tools;
 
 const MAX_TOKENS: usize = 512;
 const SYSTEM_PROMPT: &str = "You are a helpful, concise personal assistant running locally on the user's device.";
@@ -89,7 +91,7 @@ pub fn run(mut router: Router, mut main: Option<Backend>) -> Result<()> {
         history.push(ChatMessage::new(Role::User, request));
         let reply = match (decision.route, main.as_mut()) {
             (Route::DeviceControl, _) => {
-                let text = "Device control isn't wired up yet.".to_string();
+                let text = tools::handle(router.llama_mut(), request).unwrap_or_else(|e| format!("Couldn't do that: {e:#}"));
                 println!("{text}");
                 text
             }
