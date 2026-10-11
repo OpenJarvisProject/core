@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-llama-crab = { version = "0.1", default-features = false, features = ["vulkan"] }
+llama-crab = { version = "0.1", default-features = false, features = ["vulkan", "common"] }
 anyhow = "1"

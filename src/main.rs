@@ -1,45 +1,132 @@
-//! Stage 1 validation smoke test (see docs repo's architecture/runtime.md):
-//! CPU-only, stock unmodified model, no GPU backend involved yet.
+//! ojp-core CLI.
+//!   ojp-core [model.gguf]                    Stage 1/2 smoke test (default)
+//!   ojp-core route <model.gguf> "<request>"  classify one request
+//!   ojp-core route-eval <model.gguf>         score the router on fixed cases
+mod router;
+
 use llama_crab::{Llama, LlamaParams};
+use router::{Route, Router};
 
-fn main() -> anyhow::Result<()> {
-    let model_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "models/qwen2.5-0.5b-instruct-q4_k_m.gguf".to_string());
+fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
+    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
 
+fn load(model_path: &str) -> anyhow::Result<Llama> {
     // Stage 1 default is 0 (CPU-only, no GPU variable). Stage 2 sets
     // OJP_GPU_LAYERS=99 to offload everything to the GPU backend,
     // same binary, one variable changed, per the validation plan.
-    let gpu_layers: i32 = std::env::var("OJP_GPU_LAYERS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
+    let gpu_layers: i32 = env_or("OJP_GPU_LAYERS", 0);
 
     // For investigating the fixed compute-buffer VRAM cost (doesn't
     // shrink with pruning - see model-tooling's README). n_ctx default
     // unchanged from the original hardcoded value; n_ubatch, when set,
     // overrides llama.cpp's own default (observed as 512 from
     // sched_reserve's "worst-case: n_tokens = 512" log line).
-    let n_ctx: u32 = std::env::var("OJP_N_CTX")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(2048);
+    let n_ctx: u32 = env_or("OJP_N_CTX", 2048);
     let n_ubatch: Option<u32> = std::env::var("OJP_N_UBATCH").ok().and_then(|v| v.parse().ok());
 
     println!(
         "Loading model: {model_path} (n_gpu_layers={gpu_layers}, n_ctx={n_ctx}, n_ubatch={n_ubatch:?})"
     );
-    let mut params = LlamaParams::new(&model_path)
+    let mut params = LlamaParams::new(model_path)
         .with_n_ctx(n_ctx)
         .with_n_gpu_layers(gpu_layers);
     if let Some(n) = n_ubatch {
         params = params.with_n_ubatch(n);
     }
-    let mut llama = Llama::load(params)?;
-    println!("Model loaded. Running completion...");
+    Ok(Llama::load(params)?)
+}
 
-    let response = llama.create_completion("The capital of France is", 32)?;
-    println!("--- completion ---\n{}\n------------------", response.text);
+/// Dev set: for iterating on the router prompt. Disjoint from the test
+/// set below, which is only used to report results, never to tune.
+const DEV_CASES: [(&str, Route); 24] = [
+    ("Good morning!", Route::AnswerDirectly),
+    ("Who wrote Romeo and Juliet?", Route::AnswerDirectly),
+    ("Thanks, that's all.", Route::AnswerDirectly),
+    ("How many legs does a spider have?", Route::AnswerDirectly),
+    ("What does 'ephemeral' mean?", Route::AnswerDirectly),
+    ("Tell me a joke.", Route::AnswerDirectly),
+    ("How do I read a file line by line in Go?", Route::Coding),
+    ("What's the difference between a list and a tuple in Python?", Route::Coding),
+    ("My C++ program segfaults when I access a vector, why?", Route::Coding),
+    ("Write a bash script that renames all .txt files to .md.", Route::Coding),
+    ("Explain what this regex does: ^\\d{3}-\\d{4}$", Route::Coding),
+    ("Convert this SQL query to use a JOIN instead of a subquery.", Route::Coding),
+    ("I have $500 a month for groceries for a family of four; help me budget it.", Route::Reasoning),
+    ("Should I learn Spanish or Japanese first if I want to travel a lot?", Route::Reasoning),
+    ("A bat and a ball cost $1.10 in total and the bat costs $1 more than the ball. How much is the ball?", Route::Reasoning),
+    ("Outline a study plan for passing a calculus exam in two weeks.", Route::Reasoning),
+    ("My houseplant's leaves are turning yellow; what are the likely causes and how do I narrow it down?", Route::Reasoning),
+    ("Estimate how many piano tuners work in Chicago.", Route::Reasoning),
+    ("Set an alarm for 7 AM.", Route::DeviceControl),
+    ("Turn on dark mode.", Route::DeviceControl),
+    ("Mute my microphone.", Route::DeviceControl),
+    ("Lower the screen brightness to 30 percent.", Route::DeviceControl),
+    ("Close all Firefox windows.", Route::DeviceControl),
+    ("Connect to my Bluetooth headphones.", Route::DeviceControl),
+];
 
+/// Test set: same 10 cases as model-tooling's agent_tests.py "router" category.
+const ROUTER_CASES: [(&str, Route); 10] = [
+    ("Hey, how's it going?", Route::AnswerDirectly),
+    ("What's the capital of Canada?", Route::AnswerDirectly),
+    ("Write a Python function that reverses a string.", Route::Coding),
+    ("Why does my Rust code say 'borrowed value does not live long enough'?", Route::Coding),
+    ("Fix the bug in this JavaScript: for (i = 0; i < arr.length; i--) {}", Route::Coding),
+    ("Plan a three-day trip to Rome on a tight budget.", Route::Reasoning),
+    ("If a shirt costs $20 after a 20% discount, what was the original price? Explain.", Route::Reasoning),
+    ("Compare the pros and cons of renting versus buying a house.", Route::Reasoning),
+    ("Turn the volume up.", Route::DeviceControl),
+    ("Open Spotify and play my liked songs.", Route::DeviceControl),
+];
+
+fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("route") => {
+            let [_, model, request] = args.as_slice() else {
+                anyhow::bail!("usage: ojp-core route <model.gguf> \"<request>\"");
+            };
+            let mut router = Router::new(load(model)?);
+            let d = router.classify(request)?;
+            println!("{} ({} ms)", d.route.label(), d.elapsed.as_millis());
+        }
+        Some("route-eval") => {
+            let (model, cases): (&String, &[(&str, Route)]) = match args.as_slice() {
+                [_, model] => (model, &ROUTER_CASES),
+                [_, model, flag] if flag == "--dev" => (model, &DEV_CASES),
+                _ => anyhow::bail!("usage: ojp-core route-eval <model.gguf> [--dev]"),
+            };
+            let mut router = Router::new(load(model)?);
+            let (mut passed, mut total_ms) = (0, 0);
+            for &(request, expected) in cases {
+                let d = match router.classify(request) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        println!("FAIL  {e:#}  (want {}) {request}", expected.label());
+                        continue;
+                    }
+                };
+                let ok = d.route == expected;
+                passed += ok as usize;
+                total_ms += d.elapsed.as_millis();
+                println!(
+                    "{} {:>5} ms  {:<15} (want {:<15}) {request}",
+                    if ok { "PASS" } else { "FAIL" },
+                    d.elapsed.as_millis(),
+                    d.route.label(),
+                    expected.label()
+                );
+            }
+            println!("router: {passed}/{} correct, mean {} ms", cases.len(), total_ms / cases.len() as u128);
+        }
+        model => {
+            let model_path = model.unwrap_or("models/qwen2.5-0.5b-instruct-q4_k_m.gguf");
+            let mut llama = load(model_path)?;
+            println!("Model loaded. Running completion...");
+            let response = llama.create_completion("The capital of France is", 32)?;
+            println!("--- completion ---\n{}\n------------------", response.text);
+        }
+    }
     Ok(())
 }
